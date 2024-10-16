@@ -4,7 +4,35 @@ import cv2
 from Bidirectional_a_star import BidirectionalAStar
 # from predict import timer
 import operator
+from PIL import ImageDraw, Image
+from scipy.interpolate import splprep, splev
+import numpy as np
 
+def smooth_curve(points):
+    x = [p[0] for p in points]#mask为空则point为空，mask不通，则point只有2个
+    y = [p[1] for p in points]
+    tck, u = splprep([x, y], s=0, k=3)
+    x_new, y_new = splev(np.linspace(0, 1, 50), tck)
+    return list(zip(x_new, y_new))
+
+
+def draw_path_on_image(image, path, color=(255, 255, 255), radius=1):
+    # 生成平滑曲线点
+    smooth_path = smooth_curve(path)
+
+    # 检查图像类型并进行转换
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(image)
+    elif not isinstance(image, Image.Image):
+        raise TypeError("image must be a PIL Image or numpy array")
+
+    draw = ImageDraw.Draw(image)
+    for point in smooth_path:
+        # 绘制每个点为一个圆
+        draw.ellipse([point[1] - radius, point[0] - radius,
+                      point[1] + radius, point[0] + radius],
+                     fill=color)
+    return image
 
 def Down_Sample(XX_numpy, n):
     """
@@ -52,48 +80,147 @@ def Down_Sample(XX_numpy, n):
 #         end_x = w
 #     return (route)
 ###li
-def find_final(map, map_h, map_w):
+# def find_final(map, map_h, map_w):
+#     """
+#     在可变尺寸的图像中，找到一个位于白色区域的终点坐标，
+#     该坐标尽量位于白色区域高度的三分之一处（自底向上），
+#     且横坐标尽量接近图像的中间。
+#     """
+#     h = map_h
+#     w = map_w
+#
+#     # 获取整个图像的白色区域（可通行区域）的坐标
+#     white_coords = np.column_stack(np.where(map == 1))
+#
+#     if white_coords.size == 0:
+#         # 如果没有白色区域，返回 None 或处理异常
+#         return None
+#
+#     # 获取白色区域的最底部和最顶部的行号
+#     min_y = np.min(white_coords[:, 0])  # 最顶部的白色像素行号
+#     max_y = np.max(white_coords[:, 0])  # 最底部的白色像素行号
+#
+#     # 计算白色区域高度的三分之一位置（自底向上）
+#     white_height = max_y - min_y
+#     target_y = max_y - white_height // 3
+#
+#     # 限制 target_y 在图像范围内
+#     target_y = max(0, min(target_y, h - 1))
+#
+#     # 在 target_y 行上，找到所有在白色区域内的像素
+#     candidate_x = np.where(map[target_y, :] == 1)[0]
+#
+#     if candidate_x.size == 0:
+#         # 如果目标行没有白色像素，向上或向下搜索最近的白色行
+#         offset = 1
+#         found = False
+#         while not found and (target_y - offset >= 0 or target_y + offset < h):
+#             # 向上搜索
+#             if target_y - offset >= 0:
+#                 candidate_x = np.where(map[target_y - offset, :] == 1)[0]
+#                 if candidate_x.size > 0:
+#                     target_y = target_y - offset
+#                     found = True
+#                     break
+#             # 向下搜索
+#             if target_y + offset < h:
+#                 candidate_x = np.where(map[target_y + offset, :] == 1)[0]
+#                 if candidate_x.size > 0:
+#                     target_y = target_y + offset
+#                     found = True
+#                     break
+#             offset += 1
+#
+#         if not found:
+#             # 如果仍未找到，返回 None 或处理异常
+#             return None
+#
+#     # 在候选的 x 坐标中，选择最接近图像中间的一个
+#     center_x = w // 2
+#     distances = np.abs(candidate_x - center_x)
+#     min_distance_index = np.argmin(distances)
+#     target_x = candidate_x[min_distance_index]
+#
+#     # 返回终点坐标，注意 (y, x) 的顺序
+#     return (target_y, target_x)
+def find_final(map, map_h, map_w, white_threshold=20):
     """
-    找最远端路面重点的
+    在可变尺寸的图像中，找到一个位于白色区域的终点坐标，
+    该坐标尽量位于白色区域高度的三分之一处（自底向上），
+    且横坐标尽量接近图像的中间。
+
+    Args:
+    - map: 二值化图像，0 表示不可通行区域，1 表示可通行区域
+    - map_h: 图像的高度
+    - map_w: 图像的宽度
+    - white_threshold: 用于过滤噪点的白色像素最小阈值
+
+    Returns:
+    - (y, x): 终点坐标
     """
     h = map_h
     w = map_w
-    N = 10
-    white_line_threshold = int(w / N)
-    count_line = 0
-    route = []
-    start_x = start_y = 0
-    end_x = end_y = 0
 
-    for j in range(h):  # 遍历整个高度
-        for i in range(w):  # 遍历整个宽度
-            if map[j, i] == 1:  # 当前像素为白色区域
-                if count_line == 0:  # 新段的开始
-                    start_x = i
-                    start_y = j  # 记录白色区域的开始行
-                count_line += 1  # 计数
-            elif count_line > 0:  # 遇到黑色区域，表示白色区域结束
-                end_x = i
-                end_y = j  # 记录白色区域的结束行
+    # 获取整个图像的白色区域（可通行区域）的坐标
+    white_coords = np.column_stack(np.where(map == 1))
 
-                if count_line > white_line_threshold:
-                    # 计算纵向三分之一的位置
-                    height = end_y - start_y
-                    one_third_height = height // 3
-                    mid_y = end_y - one_third_height  # 自底向上三分之一
+    if white_coords.size == 0:
+        # 如果没有白色区域，返回 None 或处理异常
+        return None
 
-                    # 确保 mid_y 在白色区域内
-                    if mid_y > h*2//3 and map[mid_y, (start_x + end_x) // 2] == 1:
-                        mid_x = (start_x + end_x) // 2  # 横坐标在白色区域中间
-                        route.append((mid_x, mid_y))  # 记录坐标
+    # 获取每一行中白色像素的数量，并根据阈值筛选出有效的白色行
+    white_pixel_counts = np.sum(map == 1, axis=1)
+    valid_rows = np.where(white_pixel_counts > white_threshold)[0]  # 只保留白色像素数量超过阈值的行
 
-                count_line = 0  # 重置计数
+    if valid_rows.size == 0:
+        # 如果没有满足条件的白色行，返回 None
+        return None
 
-        # 存一个就行
-        if len(route) > 0:
-            break
+    # 获取白色区域的最底部和最顶部的有效行号
+    min_y = np.min(valid_rows)  # 最顶部的有效白色像素行号
+    max_y = np.max(valid_rows)  # 最底部的有效白色像素行号
 
-    return route
+    # 计算白色区域高度的三分之一位置（自底向上）
+    white_height = max_y - min_y
+    target_y = max_y - white_height // 3
+
+    # 限制 target_y 在图像范围内
+    target_y = max(0, min(target_y, h - 1))
+
+    # 在 target_y 行上，找到所有在白色区域内的像素
+    candidate_x = np.where(map[target_y, :] == 1)[0]
+
+    if candidate_x.size == 0:
+        # 如果目标行没有白色像素，向上或向下搜索最近的白色行
+        offset = 1
+        found = False
+        while not found and (target_y - offset >= 0 or target_y + offset < h):
+            # 向上搜索
+            if target_y - offset >= 0:
+                candidate_x = np.where(map[target_y - offset, :] == 1)[0]
+                if candidate_x.size > 0:
+                    target_y = target_y - offset
+                    found = True
+                    break
+            # 向下搜索
+            if target_y + offset < h:
+                candidate_x = np.where(map[target_y + offset, :] == 1)[0]
+                if candidate_x.size > 0:
+                    target_y = target_y + offset
+                    found = True
+                    break
+            offset += 1
+
+        if not found:
+            # 如果仍未找到，返回 None 或处理异常
+            return None
+
+    # 在候选的 x 坐标中，选择最靠近 target_y 对应白色区域中间的横坐标
+    min_x, max_x = np.min(candidate_x), np.max(candidate_x)
+    target_x = (min_x + max_x) // 2  # 选择该行白色区域的中间位置
+
+    # 返回终点坐标，注意 (y, x) 的顺序
+    return (target_y, target_x)
 
 
 ###
@@ -217,7 +344,7 @@ def pathplan(XX_numpy, end_point: list = None):
 
         # 找终点
     if end_point is None:
-        goal = find_final(planning_map, map_h, map_w)[0]#高宽
+        goal = find_final(planning_map, map_h, map_w)#高宽
         print("end_point is None")
     else:
         goal = end_point
@@ -226,8 +353,8 @@ def pathplan(XX_numpy, end_point: list = None):
 
         # 找路径
     if goal:
-        start = (int(map_w / 2), map_h - 2)
-        # start = (map_h - 1, int(map_w / 2))
+        # start = (int(map_w/2) ,map_h-1)
+        start = (map_h - 1, int(map_w / 2))
         # print(start, goal)
         bastar = BidirectionalAStar(start, goal, XX_numpy, "euclidean")
         path, visited_fore, visited_back = bastar.searching()
